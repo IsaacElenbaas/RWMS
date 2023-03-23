@@ -1,0 +1,89 @@
+#!/bin/bash
+
+# this script can be used to generate merged screenshots from the output of Henpemaz' MapExporter
+
+coproc json {
+	# unbuffered output
+	# cat is to preserve python's stdin
+	python3 -u <(cat <<- __EOF__
+		import sys, json
+		for file in sys.stdin:
+		    if(file.rstrip() == "---"):
+		        break
+		    with open(file.rstrip(), "r") as metadata:
+		        metadata = json.load(metadata)
+		        if not "rooms" in metadata:
+		            print("---")
+		            continue
+		        for room in metadata["rooms"].values():
+		            if room["cameras"] is None:
+		                continue
+		            print(room["roomName"])
+		            minx = round( min(room["cameras"], key=lambda c:  c[0])[0])
+		            miny = round(-min(room["cameras"], key=lambda c: -c[1])[1])
+		            for camera in room["cameras"]:
+		                print("{},{}".format(round(camera[0])-minx, round(-camera[1])-miny))
+		            print("---")
+		        print("---")
+		__EOF__
+	)
+}
+mkdir -p out
+command -v python3 &>/dev/null && command -v magick &>/dev/null || {
+	printf "This requires python3 and magick!\n" >&2
+	exit 1
+}
+[ "${PWD##*/}" = "export" ] || {
+	printf "This must be run in the MapExporter export directory!\n" >&2
+	exit 1
+}
+p=""
+while IFS= read -r slugcat; do
+	while IFS= read -r region; do
+		printf "$region/metadata.json\n" >&"${json[1]}"
+		out_region="${region##*/}"
+		out_region="out/${region%/*}/${out_region^^}"
+		mkdir -p "$out_region"
+		while IFS= read -r room; do
+			[ "$room" != "---" ] || break
+			screens="-background transparent"
+			i=0
+			while IFS= read -r screen; do
+				[ "$screen" != "---" ] || break
+				x="${screen%,*}"; y="${screen#*,}"
+				[ "${x::1}" = "-" ] || x="+$x"
+				[ "${y::1}" = "-" ] || y="+$y"
+				screens="$screens -page $x$y $region/${room,,}_$i.png"
+				i=$(($i+1))
+			done
+			magick convert $screens -reverse -layers merge +repage "$out_region/$room.png" &
+			p="$p$!"$'\n'
+			if [ $(wc -l <<< "${p%?}") -ge 20 ]; then
+				while IFS= read -r pid; do
+					wait "$pid"
+				done <<< "${p%?}"
+				p=""
+			fi
+		done <&"${json[0]}"
+# subshells can't access coprocess FDs so can't pipe to the loops
+	done < <(find "$slugcat" -mindepth 1 -maxdepth 1 -type d)
+done < <(find . -mindepth 1 -maxdepth 1 -type d -not -name "out")
+while IFS= read -r pid; do
+	wait "$pid"
+done <<< "${p%?}"
+printf -- "---\n" >&"${json[1]}"
+[ -n "$json_PID" ] && wait "$json_PID" || true
+find out -name "GATE_*" | while IFS= read -r gate; do
+	region="${gate#*_}"
+	region="${region%_*}"
+	old="${gate%/*}"
+	old="${old##*/}"
+	mkdir -p "${gate%/*/*}/$region"
+	[ "$old" != "$region" ] && mv "$gate" "${gate%/*/*}/$region/${gate##*/}"
+done
+find out -type d -empty -delete
+if command -v oxipng &>/dev/null; then
+	find out -mindepth 2 -maxdepth 2 -type d -exec oxipng -o max -s -r {} \;
+else
+	printf "oxipng not found, not compressing\n" >&2
+fi
