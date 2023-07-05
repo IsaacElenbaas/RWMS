@@ -1,0 +1,25 @@
+#!/bin/bash
+
+# symlinks rooms that only exist for one slugcat (-> only have one variant) to white
+# this is helpful because the room files are not always assigned to that character
+
+rw="$HOME/.local/share/Steam/steamapps/common/Rain World"
+
+rw="$rw/RainWorld_Data/StreamingAssets/mods/moreslugcats/world"
+find . -mindepth 2 -depth \( -path "./.git/*" -o -path "./white/*" \) -prune -o -print0 | tac | while IFS= read -r -d $'\0' line; do
+	line="${line#"./"}"
+	[ -e "./white/${line#*/}" ] && continue
+	matches=("./"*"/${line#*/}")
+	[ ${#matches[@]} -gt 1 ] && {
+		[ -d "./$line" ] && continue
+		# check if variations actually exist or if just not accessible by Survivor
+		region="${line#*/}"
+		room="${region#*/}"; room="${room%.*}"
+		[ "${room#GATE_}" = "$room" ] && region="${region::2}" || region="GATE"
+		matches=("$rw/${region,,}-rooms/${room,,}_settings-"*".txt")
+		[ ${#matches[@]} -gt 1 ] && continue
+	}
+	parent="./white/${line#*/}"; parent="${parent%/*}"
+	[ -e "$parent" ] || mkdir -p "$parent"
+	ln -s "$(realpath --relative-to="$parent" "./$line")" "$parent/"
+done
